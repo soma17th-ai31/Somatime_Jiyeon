@@ -1,0 +1,169 @@
+/* =============================================================
+   SomaMeet 스타일 — 미니멀 / 가독성 위주
+   - 회의 조건 입력, 참여자 화면, 타임테이블, 후보 카드
+   ============================================================= */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #f7f8fb;
+  color: #1f2330;
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+               "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+a { color: #2e6df5; }
+
+.container {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 20px 80px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.brand {
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: -0.4px;
+}
+.brand small { color: #777; font-weight: 500; font-size: 13px; margin-left: 6px; }
+
+.card {
+  background: #fff;
+  border: 1px solid #e6e8ef;
+  border-radius: 12px;
+  padding: 22px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+}
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+  letter-spacing: -0.3px;
+}
+.card .desc { color: #666; font-size: 13px; margin-bottom: 12px; }
+
+label { display:block; font-size: 13px; color:#444; margin-bottom: 6px; }
+.input, select, textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #d6d9e0;
+  border-radius: 8px;
+  font: inherit;
+  background: #fff;
+  outline: none;
+}
+.input:focus, select:focus, textarea:focus { border-color: #2e6df5; }
+
+.row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.row-3 { display: grid; gap: 12px; grid-template-columns: 1fr 1fr 1fr; }
+.row-4 { display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); }
+
+.btn {
+  display: inline-block;
+  border: none;
+  background: #2e6df5;
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:disabled { background: #c7cfdb; cursor: not-allowed; }
+.btn.secondary { background: #eef1f7; color: #1f2330; }
+.btn.ghost { background: transparent; color: #2e6df5; padding: 6px 10px; }
+.btn.danger { background: #f0476d; }
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef1f7;
+  font-size: 12px;
+  color: #555;
+  margin-right: 6px;
+}
+
+.notice {
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  color: #6b4f00;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.error {
+  background: #ffeded;
+  border: 1px solid #ffc1c1;
+  color: #9b1f1f;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+/* ----------- 타임테이블 그리드 ----------- */
+.timetable {
+  overflow: auto;
+  border: 1px solid #e6e8ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.tt-head, .tt-row {
+  display: grid;
+  grid-template-columns: 96px repeat(var(--cols), 28px);
+  align-items: center;
+}
+.tt-head { background: #f3f5fb; border-bottom: 1px solid #e6e8ef; font-size: 11px; color:#555; }
+.tt-row { border-bottom: 1px solid #f0f1f6; }
+.tt-row:last-child { border-bottom: none; }
+.tt-day { padding: 6px 8px; font-size: 12px; color: #444; border-right: 1px solid #eee; }
+.tt-cell {
+  height: 22px;
+  border-right: 1px solid #f0f1f6;
+}
+.tt-cell.lvl-0 { background: #fff; }
+.tt-cell.lvl-1 { background: #e6efff; }
+.tt-cell.lvl-2 { background: #b9d2ff; }
+.tt-cell.lvl-3 { background: #8db5ff; }
+.tt-cell.lvl-4 { background: #5e92ff; }
+.tt-cell.lvl-5 { background: #2e6df5; }
+
+.tt-legend { font-size: 12px; color:#666; margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;}
+.tt-legend .sw { display:inline-block; width:14px; height:14px; border-radius:3px; vertical-align:middle; margin-right:4px;}
+
+/* ----------- 후보 카드 ----------- */
+.cand {
+  display: flex; justify-content: space-between; align-items: center;
+  border: 1px solid #e6e8ef; border-radius: 10px; padding: 12px 14px;
+  margin-bottom: 8px; background: #fff;
+}
+.cand .when { font-weight: 700; }
+.cand .why { color: #555; font-size: 13px; margin-top: 4px; }
+
+/* ----------- 직접 입력 row ----------- */
+.busy-row {
+  display: grid; gap: 8px;
+  grid-template-columns: 1fr 1fr auto;
+  margin-bottom: 8px; align-items: end;
+}
+
+pre.draft {
+  background: #0e1421; color: #e6e8ef; padding: 14px;
+  border-radius: 8px; white-space: pre-wrap; font-size: 13px;
+}
+
+/* 모바일 */
+@media (max-width: 640px) {
+  .row, .row-3, .row-4 { grid-template-columns: 1fr; }
+}

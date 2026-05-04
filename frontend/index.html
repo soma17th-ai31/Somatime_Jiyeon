@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SomaMeet (소마밋) — 일정 조율</title>
+
+    <!--
+      ============================================================
+      [Why CDN React?]
+      MVP 단계라 npm install / build 단계를 생략합니다.
+      Babel 인-브라우저 변환은 운영용으론 부적절하지만,
+      코드 리딩·시연용으로는 가장 단순합니다.
+      배포 시에는 vite 같은 번들러로 옮기시는 걸 권장합니다.
+      ============================================================
+    -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" src="/static/app.js"></script>
+  </body>
+</html>

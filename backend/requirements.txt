@@ -1,0 +1,17 @@
+# =============================================================
+# 소마밋(SomaMeet) 백엔드 의존성
+# - FastAPI: API 서버 프레임워크
+# - uvicorn: ASGI 실행기
+# - SQLAlchemy: ORM (SQLite 사용)
+# - pydantic: 입력 검증/직렬화 (FastAPI 내장)
+# - icalendar: .ics 파일 파싱
+# - python-multipart: 파일 업로드 처리
+# - httpx: Google Calendar API 호출(어댑터/모의 호출용)
+# =============================================================
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+SQLAlchemy==2.0.35
+pydantic==2.9.2
+icalendar==5.0.13
+python-multipart==0.0.12
+httpx==0.27.2
