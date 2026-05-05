@@ -84,6 +84,20 @@ class MeetingOut(BaseModel):
 # -------------------------------------------------------------
 class ParticipantCreate(BaseModel):
     nickname: str = Field(..., min_length=1, max_length=20)
+    # 선택 입력. 같은 닉네임이 다시 들어올 때 본인 확인용.
+    # - 비워두면(none) 같은 닉네임이 이미 핀 없이 등록돼 있을 때만 재진입 허용.
+    # - 입력하면 등록 시 해시로 저장되고, 재진입 시 일치해야 함.
+    pin: Optional[str] = Field(None, min_length=2, max_length=20)
+    # 참여자별 이동시간 버퍼(분). 0/15/30/45/60/75 만 허용.
+    buffer_minutes: int = Field(0, ge=0, le=120)
+
+    @field_validator("buffer_minutes")
+    @classmethod
+    def _buffer_step_p(cls, v: int):
+        allowed = {0, 15, 30, 45, 60, 75}
+        if v not in allowed:
+            raise ValueError(f"buffer_minutes must be one of {sorted(allowed)}")
+        return v
 
 
 class TimeRange(BaseModel):
@@ -118,6 +132,7 @@ class ParticipantOut(BaseModel):
     nickname: str
     input_method: Optional[str] = None
     confirmed: bool = False
+    buffer_minutes: int = 0
     busy_blocks: List[TimeRange] = []
 
     class Config:
@@ -150,6 +165,15 @@ class RecommendationOut(BaseModel):
     candidates: List[CandidateSlot]
     total_participants: int
     note: Optional[str] = None     # 후보가 없을 때 등의 안내
+
+    # ---- 모드 스위칭 정보 ----
+    # primary 가 현재 timetable/candidates 의 기준 모드.
+    # 회의가 'any' 일 때만 alt_* 가 채워져서 프론트에서 토글로 전환할 수 있음.
+    mode: Literal["online", "offline"] = "online"
+    switchable: bool = False
+    alt_mode: Optional[Literal["online", "offline"]] = None
+    alt_timetable: Optional[List[TimetableCell]] = None
+    alt_candidates: Optional[List[CandidateSlot]] = None
 
 
 # -------------------------------------------------------------

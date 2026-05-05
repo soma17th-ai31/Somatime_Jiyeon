@@ -98,6 +98,17 @@ class Participant(Base):
     meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False)
     nickname = Column(String, nullable=False)
 
+    # When2Meet 스타일의 가벼운 본인 확인용 PIN.
+    # - 선택 입력: 비워둘 수 있음 (None).
+    # - 저장은 SHA-256 해시. 평문 저장 안 함.
+    # - 같은 회의 안에서 동일 닉네임이 다시 들어올 때 일치 여부로 본인 판정.
+    pin_hash = Column(String, nullable=True)
+
+    # 참여자별 이동시간 버퍼(분). 0/15/30/45/60/75.
+    # - 회의가 'offline' 또는 'any' 일 때만 의미가 있음.
+    # - 같은 회의여도 사람마다 출발지가 다르므로 각자 설정.
+    buffer_minutes = Column(Integer, nullable=False, default=0)
+
     # 어떤 입력 방식으로 일정을 제출했는지 — UI에서 표시용으로도 사용
     # values: "ics" | "google" | "manual"
     input_method = Column(String, nullable=True)

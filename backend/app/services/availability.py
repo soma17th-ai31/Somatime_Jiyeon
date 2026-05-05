@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Sequence, Tuple
 
 
-SLOT_MINUTES = 30  # 기획서 3.4: "Intersection Engine ... 30분 단위"
+SLOT_MINUTES = 15  # 타임테이블/추천 모두 15분 단위 (1시간 = 4칸)
 
 
 # -------------------------------------------------------------
@@ -37,6 +37,7 @@ SLOT_MINUTES = 30  # 기획서 3.4: "Intersection Engine ... 30분 단위"
 class ParticipantBusy:
     nickname: str
     busy: List[Tuple[datetime, datetime]]   # 합쳐진(merged) 바쁜 블록
+    buffer_minutes: int = 0                 # 참여자별 이동시간 버퍼 (오프라인일 때만 유효)
 
 
 @dataclass
@@ -115,15 +116,18 @@ def _merge(blocks: List[Tuple[datetime, datetime]]) -> List[Tuple[datetime, date
 def build_timetable(
     participants: List[ParticipantBusy],
     slots: List[Tuple[datetime, datetime]],
-    buffer_minutes: int,
     location_type: str,
 ) -> List[TimetableCell]:
-    """슬롯마다 어떤 닉네임이 가능한지를 채워 셀 목록을 반환."""
+    """슬롯마다 어떤 닉네임이 가능한지를 채워 셀 목록을 반환.
+    버퍼는 참여자(ParticipantBusy.buffer_minutes)에서 가져옴 — 사람마다 다름.
+    """
 
-    # 1) 참여자별 effective-busy 미리 계산
+    # 1) 참여자별 effective-busy 미리 계산 (각자의 buffer_minutes 적용)
     effective: Dict[str, List[Tuple[datetime, datetime]]] = {}
     for p in participants:
-        effective[p.nickname] = apply_buffer(p.busy, buffer_minutes, location_type)
+        effective[p.nickname] = apply_buffer(
+            p.busy, p.buffer_minutes, location_type
+        )
 
     cells: List[TimetableCell] = []
     for s_start, s_end in slots:

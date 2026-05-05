@@ -112,35 +112,129 @@ label { display:block; font-size: 13px; color:#444; margin-bottom: 6px; }
   margin-bottom: 12px;
 }
 
-/* ----------- 타임테이블 그리드 ----------- */
-.timetable {
-  overflow: auto;
+/* ----------- 타임테이블 (행=날짜, 열=시간, 15분 단위) ----------- */
+.timetable-h {
+  display: grid;
+  grid-template-columns: 80px repeat(var(--time-cols), 14px);
   border: 1px solid #e6e8ef;
   border-radius: 8px;
   background: #fff;
+  overflow: auto;             /* 가로가 길면 가로 스크롤 */
+  user-select: none;
 }
-.tt-head, .tt-row {
-  display: grid;
-  grid-template-columns: 96px repeat(var(--cols), 28px);
-  align-items: center;
+.tth-cell {
+  border-right: 1px solid #f3f4f8;
+  border-bottom: 1px solid #f3f4f8;
+  font-size: 11px;
+  color: #444;
+  box-sizing: border-box;
 }
-.tt-head { background: #f3f5fb; border-bottom: 1px solid #e6e8ef; font-size: 11px; color:#555; }
-.tt-row { border-bottom: 1px solid #f0f1f6; }
-.tt-row:last-child { border-bottom: none; }
-.tt-day { padding: 6px 8px; font-size: 12px; color: #444; border-right: 1px solid #eee; }
-.tt-cell {
+.tth-corner, .tth-time-head {
+  background: #f3f5fb;
+  font-size: 10px;
+  color: #555;
+  padding: 4px 0;
+  text-align: center;
   height: 22px;
-  border-right: 1px solid #f0f1f6;
+  line-height: 14px;
 }
-.tt-cell.lvl-0 { background: #fff; }
-.tt-cell.lvl-1 { background: #e6efff; }
-.tt-cell.lvl-2 { background: #b9d2ff; }
-.tt-cell.lvl-3 { background: #8db5ff; }
-.tt-cell.lvl-4 { background: #5e92ff; }
-.tt-cell.lvl-5 { background: #2e6df5; }
+.tth-day {
+  background: #fafbff;
+  padding: 0 6px;
+  font-size: 11px;
+  color: #555;
+  height: 22px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+.tth-slot {
+  height: 22px;
+}
+/* 1시간 시작 칸 — 좌측 경계선을 진하게 */
+.tth-cell.hour-mark {
+  border-left: 1px solid #c7cfdb;
+}
+.lvl-0 { background: #fff; }
+.lvl-1 { background: #e6efff; }
+.lvl-2 { background: #b9d2ff; }
+.lvl-3 { background: #8db5ff; }
+.lvl-4 { background: #5e92ff; }
+.lvl-5 { background: #2e6df5; }
 
-.tt-legend { font-size: 12px; color:#666; margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;}
-.tt-legend .sw { display:inline-block; width:14px; height:14px; border-radius:3px; vertical-align:middle; margin-right:4px;}
+/* ----------- 카드 헤더 (제목 + 우측 위젯) ----------- */
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ----------- 모드 스위치 (온라인 / 오프라인) ----------- */
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid #d6d9e0;
+  border-radius: 999px;
+  background: #f7f8fb;
+  padding: 2px;
+  overflow: hidden;
+}
+.mode-switch .ms-btn {
+  border: none;
+  background: transparent;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.mode-switch .ms-btn.active {
+  background: #2e6df5;
+  color: #fff;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.05);
+}
+
+/* ----------- 드래그 편집기 그리드 (15분 단위) ----------- */
+.drag-grid {
+  display: grid;
+  grid-template-columns: 64px repeat(var(--day-cols), minmax(60px, 1fr));
+  border: 1px solid #e6e8ef;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;            /* 모바일 드래그 시 스크롤 방지 */
+}
+.dg-cell {
+  border-right: 1px solid #f0f1f6;
+  border-bottom: 1px solid #f0f1f6;
+  font-size: 12px;
+  color: #444;
+}
+.dg-header, .dg-corner {
+  background: #f3f5fb;
+  font-size: 11px;
+  color: #555;
+  padding: 6px 4px;
+  text-align: center;
+}
+.dg-time {
+  background: #fafbff;
+  text-align: right;
+  padding: 0 6px;
+  font-size: 10px;
+  color: #888;
+  height: 18px;
+  line-height: 18px;
+}
+.dg-slot {
+  height: 18px;
+  cursor: pointer;
+}
+.dg-slot.off { background: #fff; }
+.dg-slot.off:hover { background: #f0f4ff; }
+.dg-slot.on  { background: #2e6df5; }
+.dg-slot.on:hover { background: #1f5ae0; }
 
 /* ----------- 후보 카드 ----------- */
 .cand {

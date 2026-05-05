@@ -44,10 +44,25 @@ def get_db():
 
 
 # -------------------------------------------------------------
-# [SECTION 3] 초기화 — 앱 시작 시 테이블 생성
+# [SECTION 3] 초기화 — 앱 시작 시 테이블 생성 + 가벼운 마이그레이션
 # -------------------------------------------------------------
 def init_db() -> None:
     # 모델을 미리 import 해야 Base.metadata에 등록됩니다.
     from . import models  # noqa: F401
+    from sqlalchemy import inspect, text
 
     Base.metadata.create_all(bind=engine)
+
+    # --- 마이그레이션: 기존 DB가 있을 때 새 컬럼을 살짝 추가 ---
+    # SQLAlchemy create_all 은 ALTER TABLE 을 해 주지 않습니다.
+    # MVP라서 정식 마이그레이션 도구(alembic) 대신 인라인 처리합니다.
+    insp = inspect(engine)
+    if "participants" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("participants")}
+        with engine.begin() as conn:
+            if "pin_hash" not in cols:
+                conn.execute(text("ALTER TABLE participants ADD COLUMN pin_hash VARCHAR"))
+            if "buffer_minutes" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE participants ADD COLUMN buffer_minutes INTEGER NOT NULL DEFAULT 0"
+                ))

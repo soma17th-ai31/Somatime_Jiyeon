@@ -27,8 +27,9 @@ routers/meetings.py — 회의 / 참여자 / 추천 / 확정 엔드포인트
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -77,26 +78,69 @@ def get_meeting(code: str, db: Session = Depends(get_db)):
 @router.post(
     "/{code}/participants", response_model=schemas.ParticipantOut
 )
-def register_participant(
+def register_or_login_participant(
     code: str, payload: schemas.ParticipantCreate, db: Session = Depends(get_db)
 ):
+    """
+    [동작 규칙 — When2Meet 스타일]
+    - 닉네임이 처음 보면 → 새 참여자 생성. (PIN이 있으면 함께 저장)
+    - 닉네임이 이미 있으면 → "재진입" 시도:
+        * 기존 등록에 PIN 이 있다 → 입력 PIN 이 일치해야 통과.
+        * 기존 등록에 PIN 이 없다 → 입력 PIN 도 비어 있어야 통과
+          (안 그러면 누군가가 닉을 선점한 상태에서 새 PIN 으로 덮어쓰는 사고 방지).
+    - 위 규칙에 어긋나면 409 + 친절한 안내 메시지 반환.
+    """
     m = _require_meeting(db, code)
 
-    # 같은 회의 안에서 닉네임 중복 불허
+    incoming_hash = _hash_pin(payload.pin)
+
     existing = (
         db.query(models.Participant)
         .filter(models.Participant.meeting_id == m.id)
         .filter(models.Participant.nickname == payload.nickname)
         .first()
     )
-    if existing:
-        raise HTTPException(409, "이미 사용 중인 닉네임입니다. 다른 닉네임을 입력해 주세요.")
 
-    p = models.Participant(meeting_id=m.id, nickname=payload.nickname)
+    if existing:
+        # 재진입 케이스 — PIN 일치 검사
+        if existing.pin_hash != incoming_hash:
+            if existing.pin_hash is None:
+                raise HTTPException(
+                    409,
+                    "이미 같은 닉네임이 PIN 없이 등록돼 있습니다. "
+                    "PIN을 비우고 다시 시도하거나 다른 닉네임을 사용해 주세요.",
+                )
+            raise HTTPException(
+                409,
+                "닉네임은 등록돼 있지만 PIN이 일치하지 않습니다. "
+                "PIN을 확인하거나 다른 닉네임을 사용해 주세요.",
+            )
+        # PIN 일치 → 기존 참여자로 재진입(로그인)
+        # 입장 시 새로 입력된 buffer_minutes 가 있으면 갱신해 준다(본인이 바꿀 수 있게).
+        if payload.buffer_minutes != existing.buffer_minutes:
+            existing.buffer_minutes = payload.buffer_minutes
+            db.commit()
+            db.refresh(existing)
+        return _to_participant_out(existing)
+
+    # 신규 등록
+    p = models.Participant(
+        meeting_id=m.id,
+        nickname=payload.nickname,
+        pin_hash=incoming_hash,
+        buffer_minutes=payload.buffer_minutes,
+    )
     db.add(p)
     db.commit()
     db.refresh(p)
     return _to_participant_out(p)
+
+
+def _hash_pin(pin: Optional[str]) -> Optional[str]:
+    """평문 PIN → SHA-256 hex. None이면 None."""
+    if not pin:
+        return None
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 
 @router.get(
@@ -195,69 +239,93 @@ def recommend(code: str, db: Session = Depends(get_db)):
     m = _require_meeting(db, code)
     participants = m.participants
 
+    # 회의 모드와 스위치 가능 여부
+    is_any = m.location_type == "any"
+    primary_mode = "online" if is_any else m.location_type  # 기본은 online (any일 때도)
+
     # 참여자가 0명이면 의미가 없으니 안내만 반환
     if not participants:
         return schemas.RecommendationOut(
             timetable=[], candidates=[], total_participants=0,
             note="아직 참여자가 없습니다. 초대 링크를 공유해 주세요.",
+            mode=primary_mode, switchable=is_any,
+            alt_mode="offline" if is_any else None,
+            alt_timetable=[] if is_any else None,
+            alt_candidates=[] if is_any else None,
         )
 
-    # 1) 슬롯 만들기
+    # 1) 슬롯 만들기 (15분 단위)
     start_date = datetime.fromisoformat(m.start_date).date()
     end_date = datetime.fromisoformat(m.end_date).date()
     slots = availability.build_slots(
         start_date, end_date, m.work_start_hour, m.work_end_hour
     )
 
-    # 2) 참여자별 BusyBlock 모으기
+    # 2) 참여자별 BusyBlock + 본인 버퍼 모으기
     pbs: List[availability.ParticipantBusy] = []
     for p in participants:
         pbs.append(
             availability.ParticipantBusy(
                 nickname=p.nickname,
                 busy=[(b.start, b.end) for b in p.busy_blocks],
+                buffer_minutes=p.buffer_minutes or 0,
             )
         )
 
-    # 3) 타임테이블 계산 (버퍼는 오프라인일 때만 적용)
-    cells = availability.build_timetable(
-        pbs, slots, m.buffer_minutes, m.location_type
-    )
+    # 3) 모드별 계산 함수 — primary, (any인 경우) offline 둘 다 동일 로직
+    #    버퍼는 ParticipantBusy 안에 들어 있으므로 build_timetable 인자에서 제거됨.
+    def calc(mode_str: str):
+        cells = availability.build_timetable(pbs, slots, mode_str)
+        cand = candidate_ranker.rank_candidates(
+            cells, m.duration_minutes, len(participants), max_candidates=3
+        )
+        return cells, cand
 
-    # 4) 후보 추천
-    cand = candidate_ranker.rank_candidates(
-        cells, m.duration_minutes, len(participants), max_candidates=3
-    )
+    p_cells, p_cands = calc(primary_mode)
+
+    alt_mode = None
+    alt_cells = None
+    alt_cands = None
+    if is_any:
+        alt_mode = "offline"
+        alt_cells, alt_cands = calc("offline")
 
     note = None
-    if not cand:
+    if not p_cands and not (alt_cands or []):
         # 기획서 4.5: 후보가 없으면 조건 완화 제안
         note = (
             "조건을 모두 만족하는 후보가 없습니다. "
             "회의 길이를 줄이거나 후보 기간을 넓혀 주세요."
         )
 
-    return schemas.RecommendationOut(
-        timetable=[
+    def _cells(cs):
+        return [
             schemas.TimetableCell(
-                start=c.start,
-                end=c.end,
+                start=c.start, end=c.end,
                 available_count=c.available_count,
                 available_nicknames=c.available_nicknames,
-            )
-            for c in cells
-        ],
-        candidates=[
+            ) for c in cs
+        ]
+
+    def _cands(cs):
+        return [
             schemas.CandidateSlot(
-                start=c.start,
-                end=c.end,
+                start=c.start, end=c.end,
                 available_nicknames=c.available_nicknames,
                 reasons=c.reasons,
-            )
-            for c in cand
-        ],
+            ) for c in cs
+        ]
+
+    return schemas.RecommendationOut(
+        timetable=_cells(p_cells),
+        candidates=_cands(p_cands),
         total_participants=len(participants),
         note=note,
+        mode=primary_mode,
+        switchable=is_any,
+        alt_mode=alt_mode,
+        alt_timetable=_cells(alt_cells) if alt_cells is not None else None,
+        alt_candidates=_cands(alt_cands) if alt_cands is not None else None,
     )
 
 
@@ -359,6 +427,7 @@ def _to_participant_out(p: models.Participant) -> schemas.ParticipantOut:
         nickname=p.nickname,
         input_method=p.input_method,
         confirmed=p.confirmed,
+        buffer_minutes=p.buffer_minutes or 0,
         busy_blocks=[
             schemas.TimeRange(start=b.start, end=b.end) for b in p.busy_blocks
         ],

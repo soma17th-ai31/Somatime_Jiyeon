@@ -46,8 +46,15 @@ const api = {
   confirm:       (code, body) => api.req(`/api/meetings/${code}/confirm`, { method: "POST", body: JSON.stringify(body) }),
   message:       (code) => api.req(`/api/meetings/${code}/message`),
 
-  addParticipant:  (code, nickname) =>
-    api.req(`/api/meetings/${code}/participants`, { method: "POST", body: JSON.stringify({ nickname }) }),
+  addParticipant:  (code, nickname, pin, bufferMinutes) =>
+    api.req(`/api/meetings/${code}/participants`, {
+      method: "POST",
+      body: JSON.stringify({
+        nickname,
+        pin: pin || null,
+        buffer_minutes: Number(bufferMinutes) || 0,
+      }),
+    }),
   getParticipant:  (code, pid) => api.req(`/api/meetings/${code}/participants/${pid}`),
   submitManual:    (code, pid, blocks) =>
     api.req(`/api/meetings/${code}/participants/${pid}/manual`, {
@@ -183,13 +190,7 @@ function CreatePage() {
 
       <div style={{ height: 12 }} />
 
-      <div className="row-3">
-        <div>
-          <label>이동 시간 버퍼 (오프라인일 때만 적용)</label>
-          <select className="input" value={form.buffer_minutes} onChange={set("buffer_minutes")}>
-            {[0, 15, 30, 45, 60, 75].map(v => <option key={v} value={v}>{v}분</option>)}
-          </select>
-        </div>
+      <div className="row">
         <div>
           <label>일과 시작</label>
           <select className="input" value={form.work_start_hour} onChange={set("work_start_hour")}>
@@ -217,14 +218,20 @@ function MeetingPage({ code }) {
   const [meeting, setMeeting] = useState(null);
   const [error, setError] = useState(null);
 
-  // 현재 브라우저에서 등록한 참여자 정보(localStorage에 보관)
-  const [me, setMe] = useState(() => {
-    const raw = localStorage.getItem(`somameet:${code}`);
-    return raw ? JSON.parse(raw) : null;
-  });
+  // 세션 동안만 유지하는 내 정보 — localStorage 자동 진입 X.
+  // (when2meet 처럼 매번 이름+핀 입력으로 본인 확인.)
+  const [me, setMe] = useState(null);
+
+  // 결과 패널 강제 리프레시 카운터.
+  // 같은 사람이 일정만 수정/확정해도 participants_count 는 변하지 않으므로
+  // 명시적 카운터로 ResultStep 의 useEffect 를 다시 트리거합니다.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const reload = async () => {
-    try { setMeeting(await api.getMeeting(code)); }
+    try {
+      setMeeting(await api.getMeeting(code));
+      setRefreshTick((t) => t + 1);
+    }
     catch (e) { setError(String(e.message || e)); }
   };
   useEffect(() => { reload(); }, [code]);
@@ -234,38 +241,48 @@ function MeetingPage({ code }) {
 
   const inviteUrl = `${window.location.origin}/m/${meeting.invite_code}`;
 
+  const logout = () => setMe(null);
+
   return (
     <>
-      <MeetingHeader meeting={meeting} inviteUrl={inviteUrl} />
+      <MeetingHeader meeting={meeting} inviteUrl={inviteUrl}
+                     me={me} onLogout={logout} />
 
       {!me ? (
-        <NicknameStep code={code} onRegistered={(p) => {
-          const value = { id: p.id, nickname: p.nickname };
-          localStorage.setItem(`somameet:${code}`, JSON.stringify(value));
-          setMe(value);
+        <NicknameStep code={code} meeting={meeting} onRegistered={(p) => {
+          setMe({ id: p.id, nickname: p.nickname });
           reload();
         }} />
       ) : (
         <ParticipantStep code={code} me={me} meeting={meeting} onChange={reload} />
       )}
 
-      <ResultStep code={code} meeting={meeting} onConfirm={reload} />
+      <ResultStep code={code} meeting={meeting}
+                  refresh={refreshTick} onConfirm={reload} />
     </>
   );
 }
 
 /* ---- 4-1) 회의 헤더 + 초대 링크 ---- */
-function MeetingHeader({ meeting, inviteUrl }) {
+function MeetingHeader({ meeting, inviteUrl, me, onLogout }) {
   const copy = () => navigator.clipboard.writeText(inviteUrl);
   return (
     <div className="card">
-      <h2>{meeting.title}</h2>
-      <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>{meeting.title}</h2>
+        {me && (
+          <div style={{ fontSize: 13, color: "#555" }}>
+            현재: <b>{me.nickname}</b>
+            <button className="btn ghost" onClick={onLogout}
+                    style={{ marginLeft: 8 }}>다른 사람으로 입장</button>
+          </div>
+        )}
+      </div>
+      <div style={{ marginTop: 8 }}>
         <span className="tag">기간 {meeting.start_date} ~ {meeting.end_date}</span>
         <span className="tag">길이 {meeting.duration_minutes}분</span>
         <span className="tag">인원 {meeting.headcount}명</span>
         <span className="tag">{({online:"온라인",offline:"오프라인",any:"형태 무관"})[meeting.location_type]}</span>
-        {meeting.buffer_minutes > 0 && <span className="tag">버퍼 {meeting.buffer_minutes}분</span>}
         <span className="tag">현재 참여 {meeting.participants_count}명</span>
       </div>
       <div style={{ marginTop: 12 }}>
@@ -279,17 +296,30 @@ function MeetingHeader({ meeting, inviteUrl }) {
   );
 }
 
-/* ---- 4-2) 닉네임 등록 ---- */
-function NicknameStep({ code, onRegistered }) {
+/* ---- 4-2) 닉네임 + PIN + (조건부) 이동시간 버퍼 입장 ---- */
+function NicknameStep({ code, meeting, onRegistered }) {
   const [nick, setNick] = useState("");
+  const [pin, setPin] = useState("");
+  const [buffer, setBuffer] = useState(0);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // 회의 형태가 오프라인 또는 상관없음 일 때만 버퍼 입력 표시.
+  // (온라인 고정 회의에서는 버퍼가 의미 없음.)
+  const showBuffer =
+    meeting?.location_type === "offline" || meeting?.location_type === "any";
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      const p = await api.addParticipant(code, nick.trim());
+      // 백엔드 분기:
+      //  - 처음 본 닉네임 → 새 등록 (PIN/버퍼 함께 저장)
+      //  - 같은 닉네임 + 같은 PIN → 기존 참여자로 재진입 (버퍼는 입력값으로 갱신)
+      //  - 같은 닉네임 + 다른 PIN → 409 에러
+      const p = await api.addParticipant(
+        code, nick.trim(), pin.trim() || null, showBuffer ? buffer : 0
+      );
       onRegistered(p);
     } catch (ex) {
       setErr(String(ex.message || ex));
@@ -299,17 +329,50 @@ function NicknameStep({ code, onRegistered }) {
   };
   return (
     <form className="card" onSubmit={submit}>
-      <h2>2. 닉네임 등록</h2>
+      <h2>2. 입장</h2>
       <div className="desc">
         로그인 없이 익명 닉네임으로 참여합니다.
-        같은 회의 안에서 중복되지 않는 이름을 선택해 주세요.
+        다음에 다시 들어와 일정을 수정하고 싶다면 <b>PIN</b>을 함께 설정해 두세요.
+        같은 닉네임으로 다시 들어올 때 같은 PIN을 입력하면 기존 일정에 이어서 작업할 수 있습니다.
       </div>
       {err && <div className="error">{err}</div>}
-      <input className="input" required minLength={1} maxLength={20}
-             placeholder="닉네임 (예: 지연)"
-             value={nick} onChange={(e) => setNick(e.target.value)} />
+
+      <div className="row">
+        <div>
+          <label>닉네임</label>
+          <input className="input" required minLength={1} maxLength={20}
+                 placeholder="예: 김소마"
+                 value={nick} onChange={(e) => setNick(e.target.value)} />
+        </div>
+        <div>
+          <label>PIN (선택)</label>
+          <input className="input" type="password" minLength={2} maxLength={20}
+                 placeholder="2~20자 (비워둬도 됩니다)"
+                 value={pin} onChange={(e) => setPin(e.target.value)} />
+        </div>
+      </div>
+
+      {showBuffer && (
+        <>
+          <div style={{ height: 12 }} />
+          <label>내 이동시간 버퍼 (오프라인 이동 여유분)</label>
+          <select className="input" value={buffer}
+                  onChange={(e) => setBuffer(Number(e.target.value))}>
+            {[0, 15, 30, 45, 60, 75].map(v => (
+              <option key={v} value={v}>{v === 0 ? "없음" : `${v}분`}</option>
+            ))}
+          </select>
+          <div className="desc" style={{ marginTop: 4 }}>
+            예: 30분으로 설정하면, 13:00–14:00 일정이 있을 때
+            12:30–14:30 가 바쁜 시간으로 처리됩니다.
+          </div>
+        </>
+      )}
+
       <div style={{ height: 12 }} />
-      <button className="btn" disabled={busy || !nick.trim()}>등록</button>
+      <button className="btn" disabled={busy || !nick.trim()}>
+        {busy ? "확인 중..." : "입장"}
+      </button>
     </form>
   );
 }
@@ -319,6 +382,7 @@ function ParticipantStep({ code, me, meeting, onChange }) {
   const [method, setMethod] = useState("manual");
   const [participant, setParticipant] = useState(null);
   const [err, setErr] = useState(null);
+  const [editing, setEditing] = useState(false);
 
   const reload = async () => {
     try {
@@ -330,6 +394,7 @@ function ParticipantStep({ code, me, meeting, onChange }) {
 
   const onSubmitted = async (p) => {
     setParticipant(p);
+    setEditing(false);
     onChange();
   };
 
@@ -339,6 +404,15 @@ function ParticipantStep({ code, me, meeting, onChange }) {
       setParticipant(p); onChange();
     } catch (e) { setErr(String(e.message || e)); }
   };
+
+  // 회의 후보 기간 안에 들어오는 블록만 필터링.
+  // (참여자가 .ics를 통째로 올리면 회의와 무관한 일정도 들어오므로, 화면엔 회의 기간 것만 표시)
+  const inRangeBlocks = useMemo(() => {
+    if (!participant?.busy_blocks) return [];
+    return filterBlocksInRange(
+      participant.busy_blocks, meeting.start_date, meeting.end_date
+    );
+  }, [participant, meeting.start_date, meeting.end_date]);
 
   return (
     <div className="card">
@@ -350,7 +424,7 @@ function ParticipantStep({ code, me, meeting, onChange }) {
 
       {err && <div className="error">{err}</div>}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {[
           ["manual", "직접 입력"],
           ["ics", ".ics 파일 업로드"],
@@ -370,26 +444,168 @@ function ParticipantStep({ code, me, meeting, onChange }) {
       {method === "google" && <GoogleAdapter code={code} pid={me.id} onSubmitted={onSubmitted}
                                               meeting={meeting} />}
 
-      {/* 검증 단계 — 기획서 3.2-4 */}
-      {participant && participant.busy_blocks && participant.busy_blocks.length > 0 && (
+      {/* 검증 단계 — 회의 기간 안의 블록이 1개라도 있을 때만 표시 */}
+      {participant && inRangeBlocks.length > 0 && !editing && (
         <div style={{ marginTop: 18 }}>
           <h2 style={{ fontSize: 16 }}>4. 추출 결과 확인</h2>
-          <div className="desc">서버에 저장된 바쁜 시간 ({participant.busy_blocks.length}건)이 맞는지 확인해 주세요.</div>
+          <div className="desc">
+            회의 후보 기간({meeting.start_date} ~ {meeting.end_date}) 안에서
+            바쁜 시간 <b>{inRangeBlocks.length}건</b>이 등록되었습니다. 맞는지 확인해 주세요.
+          </div>
           <div style={{ maxHeight: 180, overflow: "auto", background:"#fafbff", border:"1px solid #eef0f6", borderRadius: 8, padding: 8 }}>
-            {participant.busy_blocks.map((b, i) => (
+            {inRangeBlocks.map((b, i) => (
               <div key={i} style={{ fontSize: 13, padding: "2px 4px" }}>
                 · {fmtRange(b.start, b.end)}
               </div>
             ))}
           </div>
-          <div style={{ marginTop: 10 }}>
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
             <button className="btn" onClick={onConfirm}
                     disabled={participant.confirmed}>
               {participant.confirmed ? "확인 완료 ✓" : "이대로 맞아요"}
             </button>
+            <button className="btn secondary" onClick={() => setEditing(true)}>
+              결과가 다르다면 직접 수정
+            </button>
           </div>
         </div>
       )}
+
+      {/* 드래그 편집기 — 15분 단위 그리드 */}
+      {participant && editing && (
+        <div style={{ marginTop: 18 }}>
+          <h2 style={{ fontSize: 16 }}>4. 직접 수정 (드래그로 채우기/지우기)</h2>
+          <div className="desc">
+            바쁜 시간 칸을 <b>드래그</b>로 칠하거나 지울 수 있습니다 (15분 단위).
+            칠해진 칸 위에서 드래그를 시작하면 지워지고, 빈 칸에서 시작하면 채워집니다.
+          </div>
+          <DragEditor
+            meeting={meeting}
+            initialBlocks={inRangeBlocks}
+            onCancel={() => setEditing(false)}
+            onSave={async (blocks) => {
+              try {
+                const p = await api.submitManual(code, me.id, blocks);
+                onSubmitted(p);
+              } catch (e) { setErr(String(e.message || e)); }
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---- 4-3z) 드래그 편집기 (when2meet 스타일, 15분 단위) ----
+ *
+ * 행 = 시간(15분 슬롯), 열 = 날짜.
+ * pointerdown 시 시작 셀의 상태로 paint mode 결정 (off→fill, on→erase),
+ * pointerover 동안 같은 mode 적용, pointerup 또는 이탈 시 종료.
+ *
+ * 선택된 셀들을 (날짜, 시간) 키로 보관하고, 저장 시 같은 날짜의
+ * 연속된 슬롯들을 병합해 (start, end) 블록으로 변환합니다.
+ * --------------------------------------------------------------- */
+const DRAG_SLOT_MINUTES = 15;
+
+function DragEditor({ meeting, initialBlocks, onSave, onCancel }) {
+  const days = useMemo(
+    () => enumDays(meeting.start_date, meeting.end_date),
+    [meeting.start_date, meeting.end_date]
+  );
+  const slots = useMemo(
+    () => enumDaySlots(meeting.work_start_hour, meeting.work_end_hour, DRAG_SLOT_MINUTES),
+    [meeting.work_start_hour, meeting.work_end_hour]
+  );
+
+  // 셀 키 = `${YYYY-MM-DD}|${HH:MM}` (그 슬롯의 시작)
+  const [selected, setSelected] = useState(() =>
+    blocksToCellSet(initialBlocks, days, slots)
+  );
+  const [drag, setDrag] = useState(null); // { mode: 'fill' | 'erase' }
+  const [busy, setBusy] = useState(false);
+
+  const keyOf = (day, slot) => `${day}|${slot}`;
+
+  const startDrag = (day, slot) => {
+    const k = keyOf(day, slot);
+    const isOn = selected.has(k);
+    const mode = isOn ? "erase" : "fill";
+    const next = new Set(selected);
+    if (isOn) next.delete(k); else next.add(k);
+    setSelected(next);
+    setDrag({ mode });
+  };
+
+  const continueDrag = (day, slot) => {
+    if (!drag) return;
+    const k = keyOf(day, slot);
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (drag.mode === "fill") n.add(k); else n.delete(k);
+      return n;
+    });
+  };
+
+  const endDrag = () => setDrag(null);
+
+  // 마우스가 그리드 밖에서 떼졌을 때도 종료되도록 전역 리스너 부착
+  useEffect(() => {
+    if (!drag) return;
+    const up = () => setDrag(null);
+    window.addEventListener("pointerup", up);
+    return () => window.removeEventListener("pointerup", up);
+  }, [drag]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const blocks = cellSetToBlocks(selected, DRAG_SLOT_MINUTES);
+      await onSave(blocks);
+    } finally { setBusy(false); }
+  };
+
+  const slotLabel = (s) => (s.endsWith(":00") ? s : "");
+
+  return (
+    <div>
+      <div className="drag-grid"
+           style={{ "--day-cols": days.length }}
+           onPointerLeave={endDrag}>
+        {/* 헤더: 빈칸 + 날짜들 */}
+        <div className="dg-cell dg-header dg-corner">시간 \ 날짜</div>
+        {days.map((d) => (
+          <div key={d} className="dg-cell dg-header">{shortDay(d)}</div>
+        ))}
+
+        {/* 본문: 시간 라벨 + 날짜 셀들 */}
+        {slots.map((s) => (
+          <React.Fragment key={s}>
+            <div className="dg-cell dg-time">{slotLabel(s)}</div>
+            {days.map((d) => {
+              const k = keyOf(d, s);
+              const on = selected.has(k);
+              return (
+                <div
+                  key={k}
+                  className={"dg-cell dg-slot " + (on ? "on" : "off")}
+                  onPointerDown={(e) => { e.preventDefault(); startDrag(d, s); }}
+                  onPointerEnter={() => continueDrag(d, s)}
+                />
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+        <button className="btn" onClick={save} disabled={busy}>
+          {busy ? "저장 중..." : "이 내용으로 저장"}
+        </button>
+        <button className="btn secondary" onClick={onCancel}>취소</button>
+        <button className="btn ghost" onClick={() => setSelected(new Set())}>
+          전부 지우기
+        </button>
+      </div>
     </div>
   );
 }
@@ -540,16 +756,28 @@ function GoogleAdapter({ code, pid, onSubmitted, meeting }) {
 /* =============================================================
  * [SECTION 5] 결과 단계 — 타임테이블 + 후보 + 확정 + 메시지 초안
  * ============================================================= */
-function ResultStep({ code, meeting, onConfirm }) {
+function ResultStep({ code, meeting, refresh, onConfirm }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [draft, setDraft] = useState(null);
+  // 활성 모드 — 회의가 'any' 일 때만 토글로 변경 가능. 그 외엔 data.mode 고정.
+  const [activeMode, setActiveMode] = useState(null);
+  // "모두 가능 시간만" 토글 — 활성 시 전원 가능 슬롯만 색을 채움.
+  const [allOnly, setAllOnly] = useState(false);
 
   const load = async () => {
-    try { setData(await api.recommend(code)); }
+    try {
+      const d = await api.recommend(code);
+      setData(d);
+      // 처음 로드 또는 회의 모드가 바뀐 경우만 활성 모드 초기화
+      setActiveMode((prev) =>
+        prev === "online" || prev === "offline" ? prev : d.mode
+      );
+    }
     catch (e) { setErr(String(e.message || e)); }
   };
-  useEffect(() => { load(); }, [code, meeting.participants_count, meeting.confirmed_start]);
+  // refresh 카운터, 확정 변경, 코드 변경 시 자동 재호출 → 자동 새로고침
+  useEffect(() => { load(); }, [code, refresh, meeting.confirmed_start]);
 
   const pickCandidate = async (slot) => {
     try {
@@ -568,21 +796,45 @@ function ResultStep({ code, meeting, onConfirm }) {
   if (err) return <div className="card error">{err}</div>;
   if (!data) return <div className="card">결과 계산 중...</div>;
 
+  // 활성 모드에 따라 어떤 timetable/candidates 를 보여줄지 선택
+  const useAlt = data.switchable && activeMode === data.alt_mode;
+  const shownTable = useAlt ? (data.alt_timetable || []) : data.timetable;
+  const shownCandidates = useAlt ? (data.alt_candidates || []) : data.candidates;
+
   return (
     <>
       <div className="card">
-        <h2>5. 타임테이블 (전체 참여자 기준 가용 인원)</h2>
-        {data.note && <div className="notice">{data.note}</div>}
+        <div className="card-header">
+          <h2 style={{ margin: 0 }}>5. 타임테이블</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button type="button"
+                    className={"btn " + (allOnly ? "" : "secondary")}
+                    onClick={() => setAllOnly((v) => !v)}>
+              모두 가능 시간만 표시하기
+            </button>
+            <ModeSwitch data={data} active={activeMode} onChange={setActiveMode} />
+          </div>
+        </div>
+        {data.note && <div className="notice" style={{ marginTop: 8 }}>{data.note}</div>}
+        <div style={{ height: 8 }} />
         <Timetable
-          cells={data.timetable}
+          cells={shownTable}
           totalParticipants={data.total_participants}
+          headcount={meeting.headcount}
+          allOnly={allOnly}
         />
       </div>
 
       <div className="card">
-        <h2>6. 추천 후보 시간 (최대 3개)</h2>
+        <div className="card-header">
+          <h2 style={{ margin: 0 }}>6. 추천 후보 시간 (최대 3개)</h2>
+          {/* 현재 모드를 명확히 표시 — 위 스위치를 토글하면 후보 목록이 그 모드 기준으로 다시 그려집니다. */}
+          <span className="tag">
+            {((activeMode || data.mode) === "online" ? "온라인" : "오프라인") + " 기준"}
+          </span>
+        </div>
         <Candidates
-          candidates={data.candidates}
+          candidates={shownCandidates}
           onPick={pickCandidate}
           confirmed={meeting.confirmed_start}
         />
@@ -603,69 +855,106 @@ function ResultStep({ code, meeting, onConfirm }) {
   );
 }
 
-/* ---- 5-1) 타임테이블: 행=날짜, 열=시간 슬롯, 셀 색상=가용 인원 ---- */
-function Timetable({ cells, totalParticipants }) {
-  // 날짜별로 묶기
-  const grouped = useMemo(() => {
-    const byDay = new Map();
+/* ---- 5-0) 모드 스위치 — 우측 상단 ---- */
+function ModeSwitch({ data, active, onChange }) {
+  if (!data) return null;
+  // 회의가 online/offline 으로 고정 → 단순 라벨
+  if (!data.switchable) {
+    const label = data.mode === "online" ? "온라인" : "오프라인";
+    return <span className="tag" style={{ fontSize: 12 }}>{label}</span>;
+  }
+  // 'any' → 토글 스위치
+  const cur = active || data.mode;
+  return (
+    <div className="mode-switch" role="group" aria-label="회의 형태 전환">
+      <button type="button"
+              className={"ms-btn " + (cur === "online" ? "active" : "")}
+              onClick={() => onChange("online")}>온라인</button>
+      <button type="button"
+              className={"ms-btn " + (cur === "offline" ? "active" : "")}
+              onClick={() => onChange("offline")}>오프라인</button>
+    </div>
+  );
+}
+
+/* ---- 5-1) 타임테이블: 행=날짜, 열=시간 (15분 단위, 1시간=4칸) ----
+ *
+ * - 첫 행: 시간 헤더. 정시(:00)에만 라벨을 표시하고 나머지는 빈칸.
+ * - 첫 열: 날짜 라벨 (예: "5/4(월)").
+ * - 정시 칸의 좌측 경계선을 진하게 그어 1시간 단위가 한눈에 들어오도록 함.
+ * --------------------------------------------------------------- */
+function Timetable({ cells, totalParticipants, headcount, allOnly }) {
+  const { days, times, lookup } = useMemo(() => {
+    const daySet = new Set();
+    const timeSet = new Set();
+    const lookup = new Map();
     for (const c of cells) {
-      const d = c.start.slice(0, 10);
-      if (!byDay.has(d)) byDay.set(d, []);
-      byDay.get(d).push(c);
+      const d = c.start.slice(0, 10);     // YYYY-MM-DD
+      const t = c.start.slice(11, 16);    // HH:MM
+      daySet.add(d); timeSet.add(t);
+      lookup.set(`${d}|${t}`, c);
     }
-    return Array.from(byDay.entries());
+    return {
+      days: Array.from(daySet).sort(),
+      times: Array.from(timeSet).sort(),
+      lookup,
+    };
   }, [cells]);
 
-  if (cells.length === 0) return <div className="desc">참여자가 일정을 입력하면 표가 채워집니다.</div>;
+  if (cells.length === 0) {
+    return <div className="desc">참여자가 일정을 입력하면 표가 채워집니다.</div>;
+  }
 
-  // 헤더에 표시할 시각(슬롯 시작) — 첫 날 기준
-  const cols = grouped[0][1].length;
-  const headers = grouped[0][1].map((c) => c.start.slice(11, 16));
+  // 색칠 분모: 회의 생성 시 입력한 headcount(목표 인원).
+  //  - 10명 회의 → 0/10/20/.../100% 자동 단계
+  //  - 7명 회의  → 0/14/28/.../100% (alpha 비율 그대로)
+  const denom = headcount && headcount > 0 ? headcount : (totalParticipants || 1);
+  // "모두 가능" 기준: 현재 등록된 사람 모두 가능한 슬롯
+  const allCount = totalParticipants || 0;
 
-  // 인원 수에 따라 5단계 레벨로 매핑
-  const lvl = (n) => {
-    if (totalParticipants <= 0) return 0;
-    const ratio = n / totalParticipants;
-    if (ratio <= 0) return 0;
-    if (ratio <= 0.25) return 1;
-    if (ratio <= 0.5)  return 2;
-    if (ratio <= 0.75) return 3;
-    if (ratio < 1)     return 4;
-    return 5;
+  const cellStyle = (n) => {
+    if (allOnly) {
+      return n > 0 && n >= allCount
+        ? { background: "rgba(46, 109, 245, 1)" }
+        : undefined;
+    }
+    const r = Math.min(1, Math.max(0, n / denom));
+    if (r === 0) return undefined;
+    return { background: `rgba(46, 109, 245, ${r.toFixed(3)})` };
   };
 
+  const isHourMark = (t) => t.endsWith(":00");
+
   return (
-    <div>
-      <div className="timetable" style={{ "--cols": cols }}>
-        <div className="tt-head">
-          <div className="tt-day">날짜 \ 시간</div>
-          {headers.map((h, i) => (
-            <div key={i} className="tt-cell" title={h}
-                 style={{ fontSize: 9, textAlign: "center", color:"#666" }}>
-              {h.endsWith(":00") ? h.slice(0,2) : ""}
-            </div>
-          ))}
+    <div className="timetable-h" style={{ "--time-cols": times.length }}>
+      {/* 헤더 행: 좌상단 + 시간 라벨들 */}
+      <div className="tth-cell tth-corner">날짜 \ 시간</div>
+      {times.map((t) => (
+        <div key={t}
+             className={"tth-cell tth-time-head " + (isHourMark(t) ? "hour-mark" : "")}>
+          {isHourMark(t) ? t.slice(0, 2) : ""}
         </div>
-        {grouped.map(([day, list]) => (
-          <div className="tt-row" key={day}>
-            <div className="tt-day">{day}</div>
-            {list.map((c, i) => (
-              <div key={i}
-                   className={`tt-cell lvl-${lvl(c.available_count)}`}
-                   title={`${c.start.slice(11,16)}~${c.end.slice(11,16)}\n가능: ${c.available_count}/${totalParticipants}\n${c.available_nicknames.join(", ")}`} />
-            ))}
-          </div>
-        ))}
-      </div>
-      <div className="tt-legend">
-        가용 인원:
-        <span><span className="sw" style={{background:"#fff", border:"1px solid #ddd"}}/>0</span>
-        <span><span className="sw" style={{background:"#e6efff"}}/>≤25%</span>
-        <span><span className="sw" style={{background:"#b9d2ff"}}/>≤50%</span>
-        <span><span className="sw" style={{background:"#8db5ff"}}/>≤75%</span>
-        <span><span className="sw" style={{background:"#5e92ff"}}/>~99%</span>
-        <span><span className="sw" style={{background:"#2e6df5"}}/>전원</span>
-      </div>
+      ))}
+
+      {/* 본문: 각 행 = 한 날짜 */}
+      {days.map((d) => (
+        <React.Fragment key={d}>
+          <div className="tth-cell tth-day">{shortDay(d)}</div>
+          {times.map((t) => {
+            const c = lookup.get(`${d}|${t}`);
+            const hourCls = isHourMark(t) ? "hour-mark" : "";
+            const n = c ? c.available_count : 0;
+            return (
+              <div key={t}
+                   className={`tth-cell tth-slot ${hourCls}`}
+                   style={cellStyle(n)}
+                   title={c
+                     ? `${d} ${t}~${c.end.slice(11,16)}\n가능: ${n}/${denom}\n${c.available_nicknames.join(", ")}`
+                     : ""} />
+            );
+          })}
+        </React.Fragment>
+      ))}
     </div>
   );
 }
@@ -724,6 +1013,106 @@ function fmtRange(startIso, endIso) {
   const ymd = `${s.getFullYear()}-${String(s.getMonth()+1).padStart(2,"0")}-${String(s.getDate()).padStart(2,"0")}`;
   const tStr = (d) => `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
   return `${ymd}(${wd}) ${tStr(s)} ~ ${tStr(e)}`;
+}
+
+// "YYYY-MM-DD" 두 개를 받아 그 사이의 모든 날짜 문자열 배열을 반환 (양 끝 포함)
+function enumDays(startStr, endStr) {
+  const out = [];
+  const s = new Date(startStr + "T00:00:00");
+  const e = new Date(endStr + "T00:00:00");
+  for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+// 일과 시간 안에서 step분 단위 시작 시각 라벨 배열 반환 ("09:00", "09:15", ...)
+function enumDaySlots(startHour, endHour, stepMinutes) {
+  const out = [];
+  const total = (endHour - startHour) * 60;
+  for (let m = 0; m + stepMinutes <= total; m += stepMinutes) {
+    const h = startHour + Math.floor(m / 60);
+    const mm = m % 60;
+    out.push(`${String(h).padStart(2,"0")}:${String(mm).padStart(2,"0")}`);
+  }
+  return out;
+}
+
+// 블록 리스트가 주어졌을 때 셀 집합으로 변환 (드래그 편집기 초기 상태용)
+function blocksToCellSet(blocks, days, slots) {
+  const set = new Set();
+  if (!blocks || !days.length || !slots.length) return set;
+  // 슬롯 순서대로 분 단위 인덱스 만들기
+  const slotMin = (s) => parseInt(s.slice(0,2),10)*60 + parseInt(s.slice(3,5),10);
+  const stepMinutes = slotMin(slots[1] || "00:15") - slotMin(slots[0] || "00:00");
+  const slotsByDay = new Map(days.map((d) => [d, slots]));
+
+  for (const b of blocks) {
+    const s = new Date(b.start);
+    const e = new Date(b.end);
+    for (let cur = new Date(s); cur < e; cur.setMinutes(cur.getMinutes() + stepMinutes)) {
+      const day = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
+      if (!slotsByDay.has(day)) continue;
+      const slot = `${String(cur.getHours()).padStart(2,"0")}:${String(cur.getMinutes()).padStart(2,"0")}`;
+      if (slots.includes(slot)) set.add(`${day}|${slot}`);
+    }
+  }
+  return set;
+}
+
+// 셀 집합을 (start, end) 블록 리스트로 변환
+// 같은 날짜 안에서 연속된 슬롯끼리 묶음.
+function cellSetToBlocks(set, stepMinutes) {
+  // {day -> sorted [slotMin]}
+  const byDay = new Map();
+  for (const k of set) {
+    const [day, slot] = k.split("|");
+    const m = parseInt(slot.slice(0,2),10)*60 + parseInt(slot.slice(3,5),10);
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(m);
+  }
+
+  const blocks = [];
+  for (const [day, mins] of byDay) {
+    mins.sort((a,b) => a-b);
+    let runStart = null;
+    let prev = null;
+    const flush = () => {
+      if (runStart === null) return;
+      const startISO = `${day}T${pad2(Math.floor(runStart/60))}:${pad2(runStart%60)}:00`;
+      const endMin = prev + stepMinutes;
+      const endISO = `${day}T${pad2(Math.floor(endMin/60))}:${pad2(endMin%60)}:00`;
+      blocks.push({ start: startISO, end: endISO });
+      runStart = null; prev = null;
+    };
+    for (const m of mins) {
+      if (runStart === null) { runStart = m; prev = m; continue; }
+      if (m === prev + stepMinutes) { prev = m; continue; }
+      flush();
+      runStart = m; prev = m;
+    }
+    flush();
+  }
+  return blocks;
+}
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+// 회의 후보 기간 [start_date, end_date] 안에 들어오는 블록만 남김
+function filterBlocksInRange(blocks, startDate, endDate) {
+  const s = new Date(startDate + "T00:00:00").getTime();
+  const e = new Date(endDate   + "T23:59:59").getTime();
+  return (blocks || []).filter((b) => {
+    const bs = new Date(b.start).getTime();
+    return bs >= s && bs <= e;
+  });
+}
+
+// "YYYY-MM-DD" → "5/4(월)" 식의 짧은 라벨
+function shortDay(ymd) {
+  const d = new Date(ymd + "T00:00:00");
+  const wd = ["일","월","화","수","목","금","토"][d.getDay()];
+  return `${d.getMonth()+1}/${d.getDate()}(${wd})`;
 }
 
 /* =============================================================
